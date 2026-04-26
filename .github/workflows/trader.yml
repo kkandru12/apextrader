@@ -1,0 +1,83 @@
+name: Paper Trader
+
+on:
+  schedule:
+    # Morning session Mon-Fri — 7:00 AM ET (12:00 UTC covers EST; 8AM during EDT still pre-market)
+    - cron: '0 12 * * 1-5'
+    # Midday session Mon-Fri — 12:00 PM ET (17:00 UTC)
+    - cron: '0 17 * * 1-5'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+env:
+  PYTHON_VERSION: '3.11'
+  TZ: America/New_York   # All schedule times run in ET
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # GitHub Actions hard max per job
+    environment: default
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.lock
+
+      - name: Determine session (morning vs midday)
+        id: session
+        run: |
+          HOUR=$(TZ=America/New_York date +%-H)
+          if [ "$HOUR" -lt 12 ]; then
+            echo "duration=350" >> $GITHUB_OUTPUT
+            echo "label=Morning (7AM-12:50PM ET)" >> $GITHUB_OUTPUT
+          else
+            echo "duration=350" >> $GITHUB_OUTPUT
+            echo "label=Midday (12PM-5:50PM ET)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verify secrets are set
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          missing=()
+          [ -z "$APCA_API_KEY_ID" ]     && missing+=("APCA_API_KEY_ID")
+          [ -z "$APCA_API_SECRET_KEY" ] && missing+=("APCA_API_SECRET_KEY")
+          [ -z "$POLYGON_API_KEY" ]     && missing+=("POLYGON_API_KEY")
+          [ -z "$FINNHUB_API_KEY" ]     && missing+=("FINNHUB_API_KEY")
+          [ -z "$EODHD_API_KEY" ]       && missing+=("EODHD_API_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "ERROR: Missing secrets: ${missing[*]}"
+            echo "Go to repo Settings → Secrets and variables → Actions and add them."
+            exit 1
+          fi
+          echo "All 5 secrets are set."
+
+      - name: Run ${{ steps.session.outputs.label }}
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          SESSION_DURATION: ${{ steps.session.outputs.duration }}
+        run: python scripts/run_session.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-logs-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 7
